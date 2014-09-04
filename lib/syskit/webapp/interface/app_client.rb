@@ -2,7 +2,7 @@ module Roby
     module Interface
         # An interface client using TCP that provides reconnection capabilities
         # as well as proper formatting of the information
-        class ShellClient < BasicObject
+        class AppClient < BasicObject
             # @return [String] a string that describes the remote host
             attr_reader :remote_name
             # @return [#call] an object that can create a Client instance
@@ -54,62 +54,42 @@ module Roby
                 else
                     regex = Regexp.new(".*")
                 end
-                returnedactions = []
+                returnedactions = {}
                 actions.each do |action|
                     if regex.match(action.name)
                         
-                            puts "\e[1m#{action.name}!\e[0m"
+                            #puts "\e[1m#{action.name}!\e[0m"
 
                             arguments = action.arguments.sort_by {|arg| arg.name }
                             required_arguments = []
                             optional_arguments = []
                             arguments.each do |argument|
                                 if argument.required
-                                    required_arguments << argument
+                                    required_arguments << {name: argument.name, default: argument.default, doc: argument.doc}
                                 else
-                                    optional_arguments << argument
+                                    optional_arguments << {name: argument.name, default: argument.default, doc: argument.doc}
                                 end
                             end
-                            if !required_arguments.empty?
-                                puts "    required arguments"
-                                required_arguments.each do |argument|
-                                    puts "        #{argument.name}: #{argument.doc} [default: #{argument.default}]"
-                                end
-                            end
-                            if !optional_arguments.empty?
-                                puts "    optional arguments:"
-                                optional_arguments.each do |argument|
-                                    puts "        #{argument.name}: #{argument.doc} [default: #{argument.default}]"
-                                end
-                            end
-                            puts "    doc: #{action.doc}" unless action.doc.empty?
-                            actionhash = [required_arguments: required_arguments, optional_arguments: optional_arguments]
-                        returnedactions [action.name => actionhash]
+                        actionhash = Hash[required_arguments: required_arguments, optional_arguments: optional_arguments, doc: action.doc]
+                        returnedactions[action.name] = actionhash
                     end
                 end
                 returnedactions
             end
 
-            def format_arguments(hash)
-                hash.keys.map do |k|
-                    v = hash[k]
-                    v = if !v || v.respond_to?(:to_str) then v.inspect
-                        else v
-                        end
-                    "#{k} => #{v}"
-                end.join(", ")
-            end
 
             def jobs
+                returnedjobs = {}
                 jobs = call Hash[:retry => true], [], :jobs
                 jobs.each do |id, (state, task, planning_task)|
                     if planning_task.respond_to?(:action_model) && planning_task.action_model
                         name = "#{planning_task.action_model.to_s}(#{format_arguments(planning_task.action_arguments)})"
                     else name = task.to_s
                     end
-                    puts "[%4d] (%s) %s" % [id, state.to_s, name]
+                    jobhash = Hash[id: id, state: state.to_s]
+                    returnedjobs[name] = jobhash
                 end
-                nil
+                returnedjobs
             end
 
             def retry_on_com_error
@@ -288,7 +268,7 @@ module Roby
                         summarized << id
                         if !already_summarized.include?(id)
                             msg, complete = send("summarize_#{type}", *args)
-                            yield "##{id} #{msg}"
+                            yield id, msg
                             complete
                         end
                     end
@@ -321,8 +301,8 @@ module Roby
                             end
 
                         already_summarized = 
-                            summarize_pending_messages(already_summarized) do |msg|
-                                yield msg
+                            summarize_pending_messages(already_summarized) do |id, msg|
+                                yield id, msg
                             end
                         if has_valid_connection
                             was_connected = true
