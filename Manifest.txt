@@ -1,0 +1,11 @@
+README.rdoc
+Manifest.txt
+History.txt
+lib/syskit-webapp/base.rb
+lib/syskit-webapp/test.rb
+lib/syskit-webapp.rb
+.gemtest
+Rakefile
+test/test_syskit-webapp.rb
+test/suite.rb
+manifest.xml
