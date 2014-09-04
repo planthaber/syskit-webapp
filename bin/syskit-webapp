@@ -1,0 +1,163 @@
+#! /usr/bin/env ruby
+
+require 'eventmachine'
+require 'rack'
+require 'thin'
+require 'orocos'
+require 'syskit/webapp'
+require 'rack/static'
+
+require 'roby'
+require 'roby/distributed'
+require 'optparse'
+require 'utilrb/readline'
+
+
+
+thin_host = '0.0.0.0'
+thin_port = 9293
+syskit_url = 'localhost'
+cors_hosts = []
+
+options = OptionParser.new do |opt|
+    opt.on('--host host', String, 'the host of the name server that should be contacted (default to localhost)') do |host|
+        syskit_url = host
+    end
+    opt.on('--bind host', String, 'the host the server should bind to (default to 0.0.0.0)') do |host|
+        thin_host = host
+    end
+    opt.on('--port port', Integer, "the server's port (default to #{thin_port})") do |port|
+        thin_port = port
+    end
+    opt.on('--enable-cors hosts', Array, "enables Cross-Origin Resource Sharing for sites loaded from the parameter may include localhost host:port, file://. Also multiple values seperated by ','") do |host|
+        cors_hosts = host
+    end
+end
+options.parse ARGV
+
+
+app = Roby.app
+app.guess_app_dir
+app.shell
+app.single
+app.load_config_yaml
+
+require 'pp'
+
+
+
+
+error = Roby.display_exception do
+    app.base_setup
+
+    syskit_url ||= app.droby['host']
+    syskit_url ||= 'localhost'
+    if syskit_url !~ /:\d+$/
+        if app.droby['host'] && app.droby['host'] =~ /(:\d+)$/
+            syskit_url << $1
+        else
+            syskit_url << ":#{Roby::Distributed::DEFAULT_DROBY_PORT}"
+        end
+    end
+
+    DRb.start_service
+end
+if error
+    exit(1)
+end
+
+require 'irb'
+require 'irb/ext/save-history'
+IRB.setup(syskit_url)
+IRB.conf[:INSPECT_MODE] = false
+IRB.conf[:IRB_NAME]     = syskit_url
+IRB.conf[:USE_READLINE] = true
+IRB.conf[:PROMPT_MODE]  = :ROBY
+IRB.conf[:AUTO_INDENT] = true
+if Roby.app.app_dir
+    IRB.conf[:HISTORY_FILE] = File.join(Roby.app.app_dir, 'config', 'shell_history')
+end
+IRB.conf[:SAVE_HISTORY] = 1000
+IRB.conf[:PROMPT][:ROBY] = {
+    :PROMPT_I => "%N > ",
+    :PROMPT_N => "%N > ",
+    :PROMPT_S => "%N %l ",
+    :PROMPT_C => "%N * ",
+    :RETURN => "=> %s\n"
+}
+
+
+
+Roby::Distributed::DRobyModel.add_anonmodel_to_names = false
+__main_remote_interface__ = 
+    begin
+        syskit_url =~ /^(.*):(\d+)$/
+        remote_host, remote_port = $1, Integer($2)
+        Roby::Interface::ShellClient.new("#{remote_host}:#{remote_port}") do
+            Roby::Interface.connect_with_tcp_to(remote_host, remote_port)
+        end
+    rescue Interrupt
+        Roby::Interface.warn "Interrupted by user"
+        exit(1)
+    end
+
+
+Faye::WebSocket.load_adapter('thin')
+thin = Rack::Handler.get('thin')
+EM.next_tick { Syskit::WebApp.install_event_loop }
+
+app = Rack::Builder.new do
+    map '/ui' do
+        run Rack::Directory.new(Syskit::WebApp::UI_DIR)
+    end
+    map '/api' do
+        if !cors_hosts.empty?
+            require 'rack/cors'
+            use Rack::Cors do
+                allow do
+                    origins(*cors_hosts)
+                    resource '*', headers: :any, methods: [:get, :post]
+                end
+            end
+        end
+        run Syskit::WebApp::Root
+    end
+end
+
+shell = Thread.new{
+begin
+    # Make __main_remote_interface__ the top-level object
+    bind = __main_remote_interface__.instance_eval { binding }
+    ws  = IRB::WorkSpace.new(bind)
+    irb = IRB::Irb.new(ws)
+
+    context = irb.context
+    context.save_history = 100
+    IRB.conf[:MAIN_CONTEXT] = irb.context
+
+    Thread.new do
+        begin
+            __main_remote_interface__.notification_loop(0.1) do |msg|
+                Readline.puts msg
+            end
+        rescue Exception => e
+            puts e
+            puts e.backtrace.join("\n")
+        end
+    end
+
+    trap("SIGINT") do
+        irb.signal_handle
+    end
+    catch(:IRB_EXIT) do
+        irb.eval_input
+    end
+end
+}
+thin.run(app, Host: thin_host, Port: thin_port)
+
+
+
+
+
+
