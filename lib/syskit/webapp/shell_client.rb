@@ -78,12 +78,23 @@ module Syskit
                 msgs
             end
             
+            def self.start_action(m, *args)
+                @appclient.call({}, [], m, *args)
+            end
+            
             resource :actions do
                 
                 desc "Lists all tasks that are currently reachable on the name services"
                 get do
                     Shell.get_actions
-                end 
+                end
+                
+                get ':action/start' do
+                    puts "start #{params.values_at('action')}" 
+                    Shell.start_action(params.value_at('action'),*params)
+                end
+                    
+                 
             end
             
             resource :jobs do
@@ -100,7 +111,7 @@ module Syskit
                     Shell.get_messages
                 end 
             end
-            
+                        
         end     
     end
 end
